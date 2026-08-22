@@ -8,14 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_db
+from .domain.roles import MembershipStatus, UserStatus
 from .models import OrganizationMember, User
-from .security import decode_token
+from .security import decode_token_claims
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 bearer = HTTPBearer(auto_error=False)
 
 
 async def current_user(
+    request: Request,
     db: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     access_token: Annotated[str | None, Cookie()] = None,
@@ -24,12 +26,24 @@ async def current_user(
     if not raw_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
     try:
-        user_id = decode_token(raw_token, "access")
+        claims = decode_token_claims(raw_token, "access")
+        user_id = str(claims["sub"])
     except jwt.PyJWTError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid access token") from exc
     user = await db.get(User, user_id)
-    if not user or not user.is_active or user.deleted_at:
+    if (
+        not user
+        or not user.is_active
+        or user.status != UserStatus.ACTIVE
+        or user.deleted_at
+        or int(claims.get("auth_version", 0)) != user.auth_version
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Inactive user")
+    if user.force_password_change and request.url.path not in {
+        "/api/v1/auth/me",
+        "/api/v1/auth/change-password",
+    }:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "PASSWORD_CHANGE_REQUIRED")
     return user
 
 
@@ -52,6 +66,7 @@ async def csrf_protect(
 class TenantContext:
     organization_id: str
     role: str
+    member_id: str
 
 
 async def tenant_context(
@@ -64,11 +79,13 @@ async def tenant_context(
             OrganizationMember.organization_id == organization_id,
             OrganizationMember.user_id == user.id,
             OrganizationMember.deleted_at.is_(None),
+            OrganizationMember.status == MembershipStatus.ACTIVE,
         )
     )
     if not member:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Organization access denied")
-    return TenantContext(organization_id, member.role)
+    role = member.role.value if hasattr(member.role, "value") else str(member.role)
+    return TenantContext(organization_id, role, member.id)
 
 
 Tenant = Annotated[TenantContext, Depends(tenant_context)]

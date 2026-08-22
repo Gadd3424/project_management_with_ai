@@ -5,9 +5,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
+from .domain.roles import MembershipStatus, OrganizationRole, UserStatus
+
+
+def enum_values(enum_class):
+    return [item.value for item in enum_class]
 
 
 def new_id() -> str:
@@ -32,6 +38,17 @@ class User(Base, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[UserStatus] = mapped_column(
+        SqlEnum(UserStatus, values_callable=enum_values, native_enum=False, length=20),
+        default=UserStatus.ACTIVE,
+    )
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auth_version: Mapped[int] = mapped_column(Integer, default=1)
+    force_password_change: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Organization(Base, TimestampMixin):
@@ -40,6 +57,9 @@ class Organization(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(160))
     slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    allow_admin_manage_admins: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_direct_user_creation: Mapped[bool] = mapped_column(Boolean, default=False)
+    invitation_expiry_hours: Mapped[int] = mapped_column(Integer, default=72)
 
 
 class OrganizationMember(Base, TimestampMixin):
@@ -48,7 +68,49 @@ class OrganizationMember(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    role: Mapped[str] = mapped_column(String(20), default="member")
+    role: Mapped[OrganizationRole] = mapped_column(
+        SqlEnum(OrganizationRole, values_callable=enum_values, native_enum=False, length=20),
+        default=OrganizationRole.MEMBER,
+    )
+    status: Mapped[MembershipStatus] = mapped_column(
+        SqlEnum(MembershipStatus, values_callable=enum_values, native_enum=False, length=20),
+        default=MembershipStatus.ACTIVE,
+    )
+    invited_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspended_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    deleted_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class UserInvitation(Base, TimestampMixin):
+    __tablename__ = "user_invitations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[OrganizationRole] = mapped_column(
+        SqlEnum(OrganizationRole, values_callable=enum_values, native_enum=False, length=20)
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    invited_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Project(Base, TimestampMixin):
@@ -182,6 +244,13 @@ class AuditLog(Base):
     resource_id: Mapped[str] = mapped_column(String(36))
     correlation_id: Mapped[str] = mapped_column(String(64))
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    target_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    previous_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    new_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[str] = mapped_column(String(20), default="success")
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

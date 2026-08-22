@@ -1,5 +1,6 @@
 import time
 import uuid
+from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,8 +8,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .config import get_settings
-from .db import engine
-from .routers import audit_logs, auth, experiments, organizations, projects, suggestions, tasks
+from .db import SessionLocal, engine
+from .errors import DomainError
+from .models import User
+from .routers import audit_logs, auth, experiments, organization_users, organizations, projects, suggestions, tasks
+from .security import decode_token_claims
+from .services.audit_service import add_management_audit
 
 settings = get_settings()
 app = FastAPI(
@@ -54,6 +59,42 @@ async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+@app.exception_handler(DomainError)
+async def domain_exception(request: Request, exc: DomainError) -> JSONResponse:
+    if exc.status_code == 403 and request.url.path.startswith(f"{settings.api_prefix}/organizations/"):
+        with suppress(Exception):
+            organization_id = request.url.path.split("/organizations/", 1)[1].split("/", 1)[0]
+            raw_token = request.headers.get("Authorization", "").removeprefix("Bearer ") or request.cookies.get(
+                "access_token", ""
+            )
+            actor_id = str(decode_token_claims(raw_token, "access")["sub"])
+            async with SessionLocal() as db:
+                actor = await db.get(User, actor_id)
+                if actor:
+                    add_management_audit(
+                        db,
+                        request,
+                        organization_id,
+                        actor,
+                        "user.admin.access_denied",
+                        None,
+                        new_values={"path": request.url.path, "error_code": exc.code},
+                        result="denied",
+                    )
+                    await db.commit()
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+                "correlation_id": request.state.correlation_id,
+            }
+        },
+    )
+
+
 @app.get("/health/live")
 async def live() -> dict[str, str]:
     return {"status": "ok"}
@@ -74,5 +115,6 @@ for router in (
     suggestions.router,
     experiments.router,
     audit_logs.router,
+    organization_users.router,
 ):
     app.include_router(router, prefix=settings.api_prefix)

@@ -17,6 +17,7 @@ class UserRead(ORMModel):
     id: str
     email: str
     display_name: str
+    force_password_change: bool = False
 
 
 class LoginResponse(BaseModel):

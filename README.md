@@ -7,7 +7,10 @@ AI提案は業務データを直接変更しません。根拠、確信度、参
 ## 実装済みのMVP
 
 - JWT＋HttpOnly Cookie認証、CSRF検証
-- 組織単位のアクセス制御とOwner/Admin/Manager/Member/Viewerロール
+- 組織単位のアクセス制御とOWNER/ADMIN/MEMBER/VIEWERロール
+- Permissionベースのユーザー管理、招待、停止、論理削除、復元、所有権移譲
+- 招待トークンのハッシュ保存、Outboxメール配信、管理操作の詳細監査ログ
+- `auth_version`による権限変更・停止・削除後の即時セッション失効
 - プロジェクト、タスク、コメント、カンバン
 - `version`による楽観的ロック
 - 期限遅延リスクと次アクションの説明可能な提案
@@ -50,6 +53,7 @@ docker compose exec api python -m scripts.seed_demo_data
 - APIドキュメント: http://localhost:8000/api/v1/docs
 - MLflow: http://localhost:5000
 - MinIO Console: http://localhost:9001
+- ユーザー管理: http://localhost:3000/admin/users
 
 デモ認証情報：
 
@@ -95,10 +99,10 @@ pnpm run dev
 uvicorn services.inference.main:app --port 8001 --reload
 ```
 
-ワーカーはRedis起動後に実行します。
+ワーカーはRedis起動後に実行します。`--beat`によりOutboxも定期処理します。
 
 ```bash
-celery -A apps.worker.celery_app worker --loglevel=INFO
+celery -A apps.worker.celery_app worker --beat --loglevel=INFO
 ```
 
 ## テスト
@@ -135,6 +139,9 @@ docs/                          アーキテクチャ、ML、セキュリティ�
 - RAG文書の本文をシステム命令として扱わないでください。
 - AI提案の採用と実変更は分離されています。
 - モデルのデプロイはOwner/Adminによる明示的承認後、最初はシャドー状態になります。
+- 開発環境の招待URLはAPIレスポンスの`development_token`とワーカーの`DEV MAILBOX`ログで確認できます。本番環境ではトークンをレスポンスやログへ出力しません。
+- 本番のメールプロバイダーは明示的に接続してください。未設定の本番環境ではOutboxイベントを処理済みにしません。
+- 組織には常に1名以上の有効なOWNERが必要で、最後のOWNERと自分自身の停止・削除はAPIが拒否します。
 
 詳細は[アーキテクチャ](docs/architecture/overview.md)、[ML設計](docs/ml/evolutionary-merge.md)、[セキュリティ](docs/security/threat-model.md)を参照してください。
 
@@ -142,6 +149,6 @@ docs/                          アーキテクチャ、ML、セキュリティ�
 
 - 担当者推薦UIと学習済みLightGBMモデルは次の増分対象です。
 - pgvectorの拡張有効化と埋め込み列は、埋め込みモデル導入時の次期マイグレーションで追加します。
-- 現在のレート制限は単一APIプロセス向けです。水平分散時はRedisバックエンドへ交換します。
+- 現在の管理APIレート制限は単一APIプロセス向けです。水平分散時はRedisバックエンドへ交換します。
 - 添付ファイル用MinIOは起動しますが、アップロードAPIはMVP後の機能です。
 - デモ実験はCPUで再現性を検証する代理適応度を使用します。実LoRA評価時は同じOptimizerへオフライン評価関数を注入します。

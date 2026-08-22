@@ -3,14 +3,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from celery import shared_task
 from sqlalchemy import select
 
+from apps.api.app.config import get_settings
 from apps.api.app.db import SessionLocal
-from apps.api.app.models import ModelArtifact, ModelCandidate, ModelExperiment
+from apps.api.app.models import ModelArtifact, ModelCandidate, ModelExperiment, OutboxEvent
+from apps.api.app.services.invitation_service import invitation_token
+from apps.api.app.services.user_management_service import UserManagementService
 from services.evolutionary_merge import EvolutionConfig, GeneticOptimizer
+
+logger = logging.getLogger(__name__)
 
 
 def demo_fitness(weights: list[float]) -> tuple[float, dict[str, float]]:
@@ -120,3 +127,52 @@ async def execute_experiment(experiment_id: str) -> dict:
 @shared_task(name="run_evolution_experiment")
 def run_evolution_experiment(experiment_id: str) -> dict:
     return asyncio.run(execute_experiment(experiment_id))
+
+
+async def deliver_outbox_events() -> int:
+    delivered = 0
+    async with SessionLocal() as db:
+        events = (
+            await db.scalars(
+                select(OutboxEvent)
+                .where(
+                    OutboxEvent.status == "pending",
+                    OutboxEvent.available_at <= datetime.now(UTC),
+                )
+                .order_by(OutboxEvent.created_at)
+                .limit(50)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        for event in events:
+            event.attempt_count += 1
+            if event.event_type.startswith("user.invitation."):
+                if get_settings().app_env != "development":
+                    # Production delivery intentionally requires an explicitly configured provider.
+                    continue
+                invite_id = str(event.payload["invitation_id"])
+                logger.warning(
+                    "DEV MAILBOX invitation recipient=%s url=http://localhost:3000/invitations/accept?token=%s",
+                    event.payload["email"],
+                    invitation_token(invite_id),
+                )
+            elif event.event_type == "user.password_reset.requested":
+                logger.warning("DEV MAILBOX password reset requested recipient=%s", event.payload["email"])
+            elif event.event_type == "user.direct_registration.created":
+                if get_settings().app_env != "development":
+                    continue
+                logger.warning(
+                    "DEV MAILBOX direct registration recipient=%s temporary_password=%s",
+                    event.payload["email"],
+                    UserManagementService.temporary_password(str(event.payload["user_id"])),
+                )
+            event.status = "processed"
+            event.processed_at = datetime.now(UTC)
+            delivered += 1
+        await db.commit()
+    return delivered
+
+
+@shared_task(name="process_outbox_events")
+def process_outbox_events() -> int:
+    return asyncio.run(deliver_outbox_events())

@@ -17,4 +17,10 @@ celery_app.conf.update(
     task_time_limit=3600,
     task_soft_time_limit=3300,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "process-user-management-outbox": {
+            "task": "process_outbox_events",
+            "schedule": 10.0,
+        }
+    },
 )

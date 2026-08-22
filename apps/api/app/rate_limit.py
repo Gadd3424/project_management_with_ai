@@ -24,8 +24,20 @@ class SlidingWindowLimiter:
 
 
 suggestion_limiter = SlidingWindowLimiter(limit=20, window_seconds=60)
+admin_limiter = SlidingWindowLimiter(limit=60, window_seconds=60)
+invitation_accept_limiter = SlidingWindowLimiter(limit=10, window_seconds=60)
 
 
 def limit_suggestion_generation(request: Request) -> None:
     user_key = request.headers.get("Authorization") or (request.client.host if request.client else "unknown")
     suggestion_limiter.check(user_key)
+
+
+def limit_admin_mutation(request: Request) -> None:
+    key = request.headers.get("Authorization") or (request.client.host if request.client else "unknown")
+    admin_limiter.check(key)
+
+
+def limit_invitation_accept(request: Request) -> None:
+    key = request.client.host if request.client else "unknown"
+    invitation_accept_limiter.check(key)
