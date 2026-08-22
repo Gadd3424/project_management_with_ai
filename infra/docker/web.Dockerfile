@@ -5,6 +5,8 @@ RUN npm install --global pnpm@10.17.1 \
     && pnpm install --frozen-lockfile
 
 FROM deps AS build
+ARG API_INTERNAL_URL=http://api:8000/api/v1
+ENV API_INTERNAL_URL=${API_INTERNAL_URL}
 COPY . .
 RUN pnpm run build
 

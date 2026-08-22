@@ -80,6 +80,8 @@ services:
     build:
       context: apps/web
       dockerfile: ../../infra/docker/web.Dockerfile
+      args:
+        API_INTERNAL_URL: http://api:8000/api/v1
     environment:
       API_INTERNAL_URL: http://api:8000/api/v1
       NEXT_PUBLIC_API_URL: /api/v1
