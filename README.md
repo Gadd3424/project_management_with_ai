@@ -84,7 +84,7 @@ Web：
 
 ```bash
 cd apps/web
-corepack enable
+npm install --global pnpm@10.17.1
 pnpm install
 pnpm run dev
 ```
