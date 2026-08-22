@@ -33,7 +33,7 @@ AI提案は業務データを直接変更しません。根拠、確信度、参
 ```bash
 cp .env.example .env
 docker compose up --build -d
-docker compose exec api python scripts/seed_demo_data.py
+docker compose exec api python -m scripts.seed_demo_data
 ```
 
 Windows PowerShellでは次を使用できます。
@@ -41,7 +41,7 @@ Windows PowerShellでは次を使用できます。
 ```powershell
 Copy-Item .env.example .env
 docker compose up --build -d
-docker compose exec api python scripts/seed_demo_data.py
+docker compose exec api python -m scripts.seed_demo_data
 ```
 
 起動後：
@@ -76,7 +76,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 $env:DATABASE_URL="sqlite+aiosqlite:///./project_ai.db"
 alembic upgrade head
-python scripts/seed_demo_data.py
+python -m scripts.seed_demo_data
 uvicorn apps.api.app.main:app --reload
 ```
 
