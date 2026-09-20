@@ -12,6 +12,8 @@ AI提案は業務データを直接変更しません。根拠、確信度、参
 - 招待トークンのハッシュ保存、Outboxメール配信、管理操作の詳細監査ログ
 - `auth_version`による権限変更・停止・削除後の即時セッション失効
 - プロジェクト、タスク、コメント、カンバン
+- プロジェクトの作成、編集、論理削除と楽観的ロック
+- プロジェクト名からのAI初期値提案と、タスク状況に基づくAI変更案
 - `version`による楽観的ロック
 - 期限遅延リスクと次アクションの説明可能な提案
 - 提案の採用、却下、差分確認、適用、フィードバック
@@ -60,6 +62,29 @@ docker compose exec api python -m scripts.seed_demo_data
 ```text
 email: demo@example.com
 password: DemoPass123!
+```
+
+## プロジェクト管理とAI提案
+
+プロジェクト画面の「新規プロジェクト」から、概要、目的、成功条件、開始日、完了日を登録できます。
+名前を入力して「AIで入力案を生成」を押すと、入力候補が表示されます。AI提案は自動保存されず、確認してフォームへ反映した後に保存します。
+
+既存プロジェクトでは「編集」から「現在の状況からAI変更案を生成」を実行できます。タスクの完了率、期限超過、優先度、担当者設定などをサーバー側で集計し、変更前後の差分と根拠を表示します。
+
+`AI_PROVIDER=mock`では外部モデルなしで決定論的な提案を返します。進化的マージモデルを利用する場合は、モデル実験で生成したSafetensors成果物を承認し、シャドーデプロイ後に昇格してください。`AI_ALLOW_MOCK_FALLBACK=false`にすると、推論障害時のmock切り替えを禁止できます。
+
+ローカルで進化的マージを試すための小さなSafetensorsアダプターは、次のコマンドで生成できます。
+
+```bash
+docker compose exec worker python -m scripts.generate_demo_adapters
+```
+
+実験作成時の`adapter_paths`には、以下を指定します。
+
+```text
+artifacts/demo-adapters/planning.safetensors
+artifacts/demo-adapters/delivery.safetensors
+artifacts/demo-adapters/risk.safetensors
 ```
 
 停止する場合：
@@ -152,3 +177,4 @@ docs/                          アーキテクチャ、ML、セキュリティ�
 - 現在の管理APIレート制限は単一APIプロセス向けです。水平分散時はRedisバックエンドへ交換します。
 - 添付ファイル用MinIOは起動しますが、アップロードAPIはMVP後の機能です。
 - デモ実験はCPUで再現性を検証する代理適応度を使用します。実LoRA評価時は同じOptimizerへオフライン評価関数を注入します。
+

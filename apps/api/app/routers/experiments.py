@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
@@ -38,6 +38,8 @@ async def create_experiment(
             "adapter_paths": payload.adapter_paths,
             "population_size": payload.population_size,
             "generations": payload.generations,
+            "evaluation_dataset_version": payload.evaluation_dataset_version,
+            "prompt_version": payload.prompt_version,
         },
         random_seed=payload.random_seed,
         created_by=user.id,
@@ -135,3 +137,30 @@ async def deploy_model(
     add_audit(db, request, tenant.organization_id, user, "model.deploy_shadow", "model", model_id)
     await db.commit()
     return {"id": item.id, "deployment_status": item.deployment_status}
+
+
+@router.post("/models/{model_id}/promote")
+async def promote_model(
+    model_id: str, request: Request, db: DbSession, user: CurrentUser, tenant: Tenant, _: Csrf
+) -> dict[str, str]:
+    item = await db.get(ModelArtifact, model_id)
+    if not item or item.organization_id not in {None, tenant.organization_id}:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Model not found")
+    if tenant.role not in {"owner", "admin"}:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin role required")
+    if item.approval_status != "approved" or item.deployment_status != "shadow":
+        raise HTTPException(status.HTTP_409_CONFLICT, "An approved shadow model is required")
+    await db.execute(
+        update(ModelArtifact)
+        .where(
+            ModelArtifact.id != model_id,
+            ModelArtifact.organization_id == item.organization_id,
+            ModelArtifact.deployment_status == "active",
+        )
+        .values(deployment_status="retired")
+    )
+    item.deployment_status = "active"
+    add_audit(db, request, tenant.organization_id, user, "model.promote", "model", model_id)
+    await db.commit()
+    return {"id": item.id, "deployment_status": item.deployment_status}
+

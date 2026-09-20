@@ -1,8 +1,14 @@
 import time
+from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from safetensors import safe_open
+
+from services.evolutionary_merge.lora_merge import verify_checksum
 
 app = FastAPI(title="Project AI Inference", version="0.1.0")
 
@@ -21,6 +27,56 @@ class PredictionResponse(BaseModel):
     model_id: str
     model_version: str
     inference_ms: int
+
+
+class EvolutionModel(BaseModel):
+    id: str
+    version: str
+    artifact_path: str
+    checksum: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectDefaultsRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    model: EvolutionModel
+
+
+class ProjectChangeRequest(BaseModel):
+    snapshot: dict[str, Any]
+    model: EvolutionModel
+
+
+class ProjectProposalResponse(BaseModel):
+    proposed_values: dict[str, Any]
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    evidence: list[dict[str, Any]]
+    assumptions: list[str]
+    risks: list[str]
+    expected_effect: str
+    provider: str
+    model_id: str
+    model_version: str
+    inference_ms: int
+
+
+def model_signal(model: EvolutionModel) -> float:
+    """Read the approved merged Safetensors artifact and derive a bounded adaptation signal."""
+    path = Path(model.artifact_path)
+    if path.suffix != ".safetensors" or not path.is_file():
+        raise ValueError("Evolutionary model artifact is unavailable")
+    verify_checksum(path, model.checksum)
+    values: list[float] = []
+    with safe_open(path, framework="np") as handle:
+        for key in list(handle.keys())[:16]:
+            tensor = handle.get_tensor(key).astype(np.float64)
+            if not np.isfinite(tensor).all():
+                raise ValueError("Evolutionary model contains non-finite tensors")
+            values.append(float(np.mean(np.abs(tensor))))
+    if not values:
+        raise ValueError("Evolutionary model contains no tensors")
+    return float(np.tanh(np.mean(values)))
 
 
 @app.get("/health/ready")
@@ -53,3 +109,50 @@ def predict_delay(payload: PredictionRequest) -> PredictionResponse:
         model_version="0.1.0",
         inference_ms=round((time.perf_counter() - started) * 1000),
     )
+
+
+@app.post("/v1/projects/defaults", response_model=ProjectProposalResponse)
+def project_defaults(payload: ProjectDefaultsRequest) -> ProjectProposalResponse:
+    from apps.api.app.project_ai_service import mock_defaults
+
+    started = time.perf_counter()
+    signal = model_signal(payload.model)
+    result = mock_defaults(payload.name)
+    proposed = result["proposed_values"]
+    proposed["due_date"] = (date.fromisoformat(proposed["due_date"]) + timedelta(days=round(signal * 21))).isoformat()
+    result["confidence"] = min(0.95, result["confidence"] + signal * 0.15)
+    result["evidence"].append({"type": "evolutionary_model_signal", "value": round(signal, 4)})
+    return ProjectProposalResponse(
+        **{
+            key: value
+            for key, value in result.items()
+            if key not in {"provider", "model_id", "model_version", "inference_ms"}
+        },
+        provider="evolutionary_merge",
+        model_id=payload.model.id,
+        model_version=payload.model.version,
+        inference_ms=round((time.perf_counter() - started) * 1000),
+    )
+
+
+@app.post("/v1/projects/change-proposal", response_model=ProjectProposalResponse)
+def project_change(payload: ProjectChangeRequest) -> ProjectProposalResponse:
+    from apps.api.app.project_ai_service import mock_change_proposal
+
+    started = time.perf_counter()
+    signal = model_signal(payload.model)
+    result = mock_change_proposal(payload.snapshot)
+    result["confidence"] = min(0.95, result["confidence"] + signal * 0.15)
+    result["evidence"].append({"type": "evolutionary_model_signal", "value": round(signal, 4)})
+    return ProjectProposalResponse(
+        **{
+            key: value
+            for key, value in result.items()
+            if key not in {"provider", "model_id", "model_version", "inference_ms"}
+        },
+        provider="evolutionary_merge",
+        model_id=payload.model.id,
+        model_version=payload.model.version,
+        inference_ms=round((time.perf_counter() - started) * 1000),
+    )
+

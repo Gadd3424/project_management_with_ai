@@ -1,13 +1,28 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select, update
 
 from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
+from ..domain.permissions import OrganizationPermission
 from ..idempotency import find_replayed_resource, store_idempotency
-from ..models import Project, Task
-from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate, TaskCreate, TaskRead
+from ..models import Project, ProjectAISuggestion, Task
+from ..project_ai_service import suggest_changes, suggest_defaults
+from ..rate_limit import limit_suggestion_generation
+from ..schemas import (
+    ProjectAIFeedback,
+    ProjectAISuggestionRead,
+    ProjectCreate,
+    ProjectDefaultsRequest,
+    ProjectDeleteRequest,
+    ProjectRead,
+    ProjectUpdate,
+    TaskCreate,
+    TaskRead,
+)
+from ..services.authorization_service import AuthorizationService
 
 router = APIRouter(tags=["projects"])
 
@@ -38,6 +53,9 @@ async def create_project(
     _: Csrf,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> Project:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_CREATE
+    )
     payload_data = payload.model_dump(mode="json")
     replay = await find_replayed_resource(
         db, tenant.organization_id, idempotency_key, "POST", request.url.path, payload_data
@@ -46,11 +64,11 @@ async def create_project(
         existing = await db.get(Project, replay.resource_id)
         if existing and existing.organization_id == tenant.organization_id:
             return existing
+    project_data = payload.model_dump(exclude={"ai_suggestion_id"})
     project = Project(
         organization_id=tenant.organization_id,
-        name=payload.name,
-        description=payload.description,
         created_by=user.id,
+        **project_data,
     )
     db.add(project)
     await db.flush()
@@ -65,6 +83,16 @@ async def create_project(
         project.id,
     )
     add_audit(db, request, tenant.organization_id, user, "project.create", "project", project.id)
+    if payload.ai_suggestion_id:
+        suggestion = await db.scalar(
+            select(ProjectAISuggestion).where(
+                ProjectAISuggestion.id == payload.ai_suggestion_id,
+                ProjectAISuggestion.organization_id == tenant.organization_id,
+            )
+        )
+        if suggestion:
+            suggestion.project_id = project.id
+            suggestion.decision = "accepted"
     await db.commit()
     await db.refresh(project)
     return project
@@ -94,7 +122,10 @@ async def update_project(
     tenant: Tenant,
     _: Csrf,
 ) -> Project:
-    changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
+    changes = payload.model_dump(exclude_unset=True, exclude={"version", "ai_suggestion_id"})
     result = await db.execute(
         update(Project)
         .where(
@@ -108,8 +139,180 @@ async def update_project(
     if result.rowcount == 0:
         raise HTTPException(status.HTTP_409_CONFLICT, "Project changed or no longer exists")
     add_audit(db, request, tenant.organization_id, user, "project.update", "project", project_id, changes)
+    if payload.ai_suggestion_id:
+        suggestion = await db.scalar(
+            select(ProjectAISuggestion).where(
+                ProjectAISuggestion.id == payload.ai_suggestion_id,
+                ProjectAISuggestion.project_id == project_id,
+                ProjectAISuggestion.organization_id == tenant.organization_id,
+            )
+        )
+        if suggestion:
+            suggestion.decision = "accepted"
     await db.commit()
     return await get_project(project_id, db, tenant)
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    project_id: str,
+    payload: ProjectDeleteRequest,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: Tenant,
+    _: Csrf,
+) -> Response:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_DELETE
+    )
+    result = await db.execute(
+        update(Project)
+        .where(
+            Project.id == project_id,
+            Project.organization_id == tenant.organization_id,
+            Project.version == payload.version,
+            Project.deleted_at.is_(None),
+        )
+        .values(deleted_at=datetime.now(UTC), version=Project.version + 1)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Project changed or no longer exists")
+    add_audit(db, request, tenant.organization_id, user, "project.delete", "project", project_id)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _build_project_suggestion(
+    *, tenant, user, suggestion_type: str, project_id: str | None, snapshot: dict, result: dict
+) -> ProjectAISuggestion:
+    return ProjectAISuggestion(
+        organization_id=tenant.organization_id,
+        project_id=project_id,
+        suggestion_type=suggestion_type,
+        input_snapshot=snapshot,
+        proposed_values=result["proposed_values"],
+        confidence=result["confidence"],
+        rationale=result["rationale"],
+        evidence=result.get("evidence", []),
+        assumptions=result.get("assumptions", []),
+        risks=result.get("risks", []),
+        expected_effect=result.get("expected_effect", ""),
+        provider=result["provider"],
+        model_id=result.get("model_id"),
+        model_version=result.get("model_version"),
+        inference_ms=result.get("inference_ms", 0),
+        created_by=user.id,
+    )
+
+
+@router.post("/projects/ai/defaults", response_model=ProjectAISuggestionRead, status_code=201)
+async def create_project_defaults(
+    payload: ProjectDefaultsRequest,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: Tenant,
+    _: Csrf,
+    _rate_limit: None = Depends(limit_suggestion_generation),
+) -> ProjectAISuggestion:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
+    result = await suggest_defaults(db, tenant.organization_id, payload.name)
+    suggestion = _build_project_suggestion(
+        tenant=tenant,
+        user=user,
+        suggestion_type="project_defaults",
+        project_id=None,
+        snapshot={"name": payload.name},
+        result=result,
+    )
+    db.add(suggestion)
+    await db.flush()
+    add_audit(
+        db,
+        request,
+        tenant.organization_id,
+        user,
+        "project.ai_defaults.generate",
+        "project_ai_suggestion",
+        suggestion.id,
+    )
+    await db.commit()
+    await db.refresh(suggestion)
+    return suggestion
+
+
+@router.post(
+    "/projects/{project_id}/ai/change-proposal",
+    response_model=ProjectAISuggestionRead,
+    status_code=201,
+)
+async def create_project_change_proposal(
+    project_id: str,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: Tenant,
+    _: Csrf,
+    _rate_limit: None = Depends(limit_suggestion_generation),
+) -> ProjectAISuggestion:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
+    project = await get_project(project_id, db, tenant)
+    snapshot, result = await suggest_changes(db, project)
+    suggestion = _build_project_suggestion(
+        tenant=tenant,
+        user=user,
+        suggestion_type="project_change_proposal",
+        project_id=project.id,
+        snapshot=snapshot,
+        result=result,
+    )
+    db.add(suggestion)
+    await db.flush()
+    add_audit(
+        db,
+        request,
+        tenant.organization_id,
+        user,
+        "project.ai_change_proposal.generate",
+        "project_ai_suggestion",
+        suggestion.id,
+    )
+    await db.commit()
+    await db.refresh(suggestion)
+    return suggestion
+
+
+@router.post("/project-ai-suggestions/{suggestion_id}/feedback", response_model=ProjectAISuggestionRead)
+async def project_ai_feedback(
+    suggestion_id: str,
+    payload: ProjectAIFeedback,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: Tenant,
+    _: Csrf,
+) -> ProjectAISuggestion:
+    suggestion = await db.scalar(
+        select(ProjectAISuggestion).where(
+            ProjectAISuggestion.id == suggestion_id,
+            ProjectAISuggestion.organization_id == tenant.organization_id,
+            ProjectAISuggestion.deleted_at.is_(None),
+        )
+    )
+    if not suggestion:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project AI suggestion not found")
+    suggestion.decision = payload.decision
+    suggestion.feedback_rating = payload.rating
+    suggestion.feedback_comment = payload.comment
+    add_audit(db, request, tenant.organization_id, user, "project.ai_feedback", "project_ai_suggestion", suggestion.id)
+    await db.commit()
+    await db.refresh(suggestion)
+    return suggestion
 
 
 @router.get("/projects/{project_id}/tasks", response_model=list[TaskRead])
@@ -141,6 +344,9 @@ async def create_task(
     _: Csrf,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> Task:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
     project = await get_project(project_id, db, tenant)
     payload_data = payload.model_dump(mode="json")
     replay = await find_replayed_resource(
@@ -172,3 +378,4 @@ async def create_task(
     await db.commit()
     await db.refresh(task)
     return task
+

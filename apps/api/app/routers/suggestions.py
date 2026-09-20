@@ -4,9 +4,11 @@ from sqlalchemy import select
 from ..ai_service import generate_suggestions
 from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
-from ..models import AISuggestion, AISuggestionFeedback, Task
+from ..domain.permissions import OrganizationPermission
+from ..models import AISuggestion, AISuggestionFeedback, Project, Task
 from ..rate_limit import limit_suggestion_generation
 from ..schemas import FeedbackCreate, SuggestionDecision, SuggestionRead, TaskRead
+from ..services.authorization_service import AuthorizationService
 from .tasks import tenant_task
 
 router = APIRouter(tags=["ai-suggestions"])
@@ -14,10 +16,14 @@ router = APIRouter(tags=["ai-suggestions"])
 
 async def tenant_suggestion(suggestion_id: str, db: DbSession, tenant: Tenant) -> AISuggestion:
     item = await db.scalar(
-        select(AISuggestion).where(
+        select(AISuggestion)
+        .join(Project, AISuggestion.project_id == Project.id)
+        .where(
             AISuggestion.id == suggestion_id,
             AISuggestion.organization_id == tenant.organization_id,
             AISuggestion.deleted_at.is_(None),
+            Project.organization_id == tenant.organization_id,
+            Project.deleted_at.is_(None),
         )
     )
     if not item:
@@ -53,6 +59,9 @@ async def create_suggestions(
     _: Csrf,
     _rate_limit: None = Depends(limit_suggestion_generation),
 ) -> list[AISuggestion]:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
     task = await tenant_task(task_id, db, tenant)
     suggestions = await generate_suggestions(db, task)
     for item in suggestions:
@@ -72,6 +81,9 @@ async def decide(
     user: CurrentUser,
     tenant: Tenant,
 ) -> AISuggestion:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
     item = await tenant_suggestion(suggestion_id, db, tenant)
     if item.decision != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, "Suggestion already decided")
@@ -133,6 +145,9 @@ async def apply_suggestion(
     tenant: Tenant,
     _: Csrf,
 ) -> Task:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
     item = await tenant_suggestion(suggestion_id, db, tenant)
     if item.decision != "accepted":
         raise HTTPException(status.HTTP_409_CONFLICT, "Accept the suggestion before applying it")
@@ -162,6 +177,9 @@ async def add_feedback(
     tenant: Tenant,
     _: Csrf,
 ) -> dict[str, str]:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
+    )
     await tenant_suggestion(suggestion_id, db, tenant)
     feedback = AISuggestionFeedback(
         organization_id=tenant.organization_id,
@@ -172,3 +190,4 @@ async def add_feedback(
     db.add(feedback)
     await db.commit()
     return {"id": feedback.id}
+

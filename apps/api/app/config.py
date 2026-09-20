@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     inference_url: str = "http://localhost:8001"
     ai_provider: str = "mock"
+    ai_allow_mock_fallback: bool = True
+    inference_timeout_seconds: float = 10.0
     ai_min_evidence_count: int = 1
     mlflow_tracking_uri: str = "http://localhost:5000"
 
@@ -32,3 +34,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
