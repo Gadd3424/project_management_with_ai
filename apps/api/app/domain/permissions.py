@@ -4,6 +4,10 @@ from .roles import OrganizationRole
 
 
 class OrganizationPermission(StrEnum):
+    PROJECTS_CREATE = "projects.create"
+    PROJECTS_UPDATE = "projects.update"
+    PROJECTS_DELETE = "projects.delete"
+    PROJECTS_AI_SUGGEST = "projects.ai_suggest"
     USERS_READ = "organization.users.read"
     USERS_CREATE = "organization.users.create"
     USERS_UPDATE = "organization.users.update"
@@ -24,6 +28,10 @@ class OrganizationPermission(StrEnum):
 OWNER_PERMISSIONS = frozenset(OrganizationPermission)
 ADMIN_PERMISSIONS = frozenset(
     {
+        OrganizationPermission.PROJECTS_CREATE,
+        OrganizationPermission.PROJECTS_UPDATE,
+        OrganizationPermission.PROJECTS_DELETE,
+        OrganizationPermission.PROJECTS_AI_SUGGEST,
         OrganizationPermission.USERS_READ,
         OrganizationPermission.USERS_CREATE,
         OrganizationPermission.USERS_UPDATE,
@@ -40,7 +48,14 @@ ADMIN_PERMISSIONS = frozenset(
 ROLE_PERMISSIONS: dict[OrganizationRole, frozenset[OrganizationPermission]] = {
     OrganizationRole.OWNER: OWNER_PERMISSIONS,
     OrganizationRole.ADMIN: ADMIN_PERMISSIONS,
-    OrganizationRole.MEMBER: frozenset(),
+    OrganizationRole.MEMBER: frozenset(
+        {
+            OrganizationPermission.PROJECTS_CREATE,
+            OrganizationPermission.PROJECTS_UPDATE,
+            OrganizationPermission.PROJECTS_DELETE,
+            OrganizationPermission.PROJECTS_AI_SUGGEST,
+        }
+    ),
     OrganizationRole.VIEWER: frozenset(),
 }
 
@@ -48,3 +63,4 @@ ROLE_PERMISSIONS: dict[OrganizationRole, frozenset[OrganizationPermission]] = {
 def permissions_for_role(role: OrganizationRole | str) -> frozenset[OrganizationPermission]:
     normalized = role if isinstance(role, OrganizationRole) else OrganizationRole(role)
     return ROLE_PERMISSIONS[normalized]
+

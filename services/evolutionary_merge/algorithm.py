@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import math
 import random
@@ -145,10 +146,20 @@ class GeneticOptimizer:
     ) -> EvolutionResult:
         population = self.initial_population()
         history: list[dict[str, float]] = []
+        start_generation = 0
+        if checkpoint_path and checkpoint_path.exists():
+            payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if payload.get("config") != asdict(self.config):
+                raise ValueError("Checkpoint configuration does not match the experiment")
+            restored = [Individual(**item) for item in payload["population"]]
+            self.random.setstate(ast.literal_eval(payload["random_state"]))
+            population = self.next_generation(restored)
+            history = payload["history"]
+            start_generation = int(payload["generation"]) + 1
         best_score = -math.inf
         stale_generations = 0
         completed = 0
-        for generation in range(self.config.generations):
+        for generation in range(start_generation, self.config.generations):
             if should_cancel and should_cancel():
                 break
             self.evaluate(population, fitness_fn)
@@ -176,3 +187,4 @@ class GeneticOptimizer:
             history,
             completed,
         )
+

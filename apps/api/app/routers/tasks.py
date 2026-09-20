@@ -3,18 +3,24 @@ from sqlalchemy import select, update
 
 from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
-from ..models import Comment, Task
+from ..domain.permissions import OrganizationPermission
+from ..models import Comment, Project, Task
 from ..schemas import CommentCreate, CommentRead, TaskRead, TaskUpdate
+from ..services.authorization_service import AuthorizationService
 
 router = APIRouter(tags=["tasks"])
 
 
 async def tenant_task(task_id: str, db: DbSession, tenant: Tenant) -> Task:
     task = await db.scalar(
-        select(Task).where(
+        select(Task)
+        .join(Project, Task.project_id == Project.id)
+        .where(
             Task.id == task_id,
             Task.organization_id == tenant.organization_id,
             Task.deleted_at.is_(None),
+            Project.organization_id == tenant.organization_id,
+            Project.deleted_at.is_(None),
         )
     )
     if not task:
@@ -37,6 +43,9 @@ async def update_task(
     tenant: Tenant,
     _: Csrf,
 ) -> Task:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
     result = await db.execute(
         update(Task)
@@ -83,6 +92,9 @@ async def create_comment(
     tenant: Tenant,
     _: Csrf,
 ) -> Comment:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
     await tenant_task(task_id, db, tenant)
     comment = Comment(
         organization_id=tenant.organization_id,
@@ -96,3 +108,4 @@ async def create_comment(
     await db.commit()
     await db.refresh(comment)
     return comment
+

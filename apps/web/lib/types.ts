@@ -1,7 +1,15 @@
 export type Organization = { id: string; name: string; slug: string; role: string };
 export type Project = {
   id: string; organization_id: string; name: string; description: string;
+  objective: string; success_criteria: string; start_date: string | null; due_date: string | null;
   status: string; version: number; created_at: string;
+};
+export type ProjectAISuggestion = {
+  id: string; project_id: string | null; suggestion_type: string;
+  proposed_values: Partial<Project>; confidence: number; rationale: string;
+  evidence: Array<Record<string, unknown>>; assumptions: string[]; risks: string[];
+  expected_effect: string; provider: string; model_id: string | null;
+  model_version: string | null; inference_ms: number; decision: string; created_at: string;
 };
 export type Task = {
   id: string; project_id: string; title: string; description: string;
@@ -16,4 +24,5 @@ export type Suggestion = {
   decision: string; revised_content: Record<string, unknown> | null; inference_ms: number;
   created_at: string;
 };
+
 

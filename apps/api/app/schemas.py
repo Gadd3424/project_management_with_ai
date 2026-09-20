@@ -30,12 +30,23 @@ class LoginResponse(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=10000)
+    objective: str = Field(default="", max_length=10000)
+    success_criteria: str = Field(default="", max_length=10000)
+    start_date: datetime | None = None
+    due_date: datetime | None = None
+    status: Literal["active", "archived"] = "active"
+    ai_suggestion_id: str | None = None
 
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=10000)
+    objective: str | None = Field(default=None, max_length=10000)
+    success_criteria: str | None = Field(default=None, max_length=10000)
+    start_date: datetime | None = None
+    due_date: datetime | None = None
     status: Literal["active", "archived"] | None = None
+    ai_suggestion_id: str | None = None
     version: int = Field(ge=1)
 
 
@@ -44,9 +55,46 @@ class ProjectRead(ORMModel):
     organization_id: str
     name: str
     description: str
+    objective: str
+    success_criteria: str
+    start_date: datetime | None
+    due_date: datetime | None
     status: str
     version: int
     created_at: datetime
+
+
+class ProjectDefaultsRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+
+
+class ProjectDeleteRequest(BaseModel):
+    version: int = Field(ge=1)
+
+
+class ProjectAISuggestionRead(ORMModel):
+    id: str
+    project_id: str | None
+    suggestion_type: str
+    proposed_values: dict[str, Any]
+    confidence: float
+    rationale: str
+    evidence: list[dict[str, Any]]
+    assumptions: list[str]
+    risks: list[str]
+    expected_effect: str
+    provider: str
+    model_id: str | None
+    model_version: str | None
+    inference_ms: int
+    decision: str
+    created_at: datetime
+
+
+class ProjectAIFeedback(BaseModel):
+    decision: Literal["accepted", "rejected", "modified"]
+    rating: int | None = Field(default=None, ge=1, le=5)
+    comment: str = Field(default="", max_length=5000)
 
 
 class TaskCreate(BaseModel):
@@ -129,6 +177,8 @@ class ExperimentCreate(BaseModel):
     population_size: int = Field(default=8, ge=4, le=100)
     generations: int = Field(default=5, ge=1, le=100)
     random_seed: int = 42
+    evaluation_dataset_version: str = Field(default="project-proposals-v1", max_length=100)
+    prompt_version: str = Field(default="project-ai-v1", max_length=100)
 
 
 class ExperimentRead(ORMModel):
@@ -142,3 +192,4 @@ class ExperimentRead(ORMModel):
     cancel_requested: bool
     checkpoint_path: str | None
     created_at: datetime
+

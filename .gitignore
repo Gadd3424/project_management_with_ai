@@ -1,5 +1,6 @@
 .env
 .venv/
+.testdeps/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -24,3 +25,4 @@ redis-data/
 playwright-report/
 test-results/
 work/
+

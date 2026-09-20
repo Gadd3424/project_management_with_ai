@@ -35,12 +35,14 @@ def validate_compatibility(paths: list[Path]) -> AdapterMetadata:
     metadata = [load_metadata(path) for path in paths]
     if any(item != metadata[0] for item in metadata[1:]):
         raise ValueError("LoRA adapters have incompatible metadata")
-    key_shapes: list[dict[str, tuple[int, ...]]] = []
+    tensor_specs: list[dict[str, tuple[tuple[int, ...], str]]] = []
     for path in paths:
         with safe_open(path, framework="np") as handle:
-            key_shapes.append({key: handle.get_tensor(key).shape for key in handle.keys()})
-    if any(item != key_shapes[0] for item in key_shapes[1:]):
-        raise ValueError("LoRA adapters have incompatible tensor names or shapes")
+            tensor_specs.append(
+                {key: (handle.get_tensor(key).shape, str(handle.get_tensor(key).dtype)) for key in handle.keys()}
+            )
+    if any(item != tensor_specs[0] for item in tensor_specs[1:]):
+        raise ValueError("LoRA adapters have incompatible tensor names, shapes, or dtypes")
     return metadata[0]
 
 
@@ -67,3 +69,4 @@ def verify_checksum(path: Path, expected_sha256: str) -> None:
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if not hmac.compare_digest(actual, expected_sha256.lower()):
         raise ValueError("Model artifact checksum mismatch")
+

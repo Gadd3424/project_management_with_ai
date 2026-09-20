@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -16,25 +15,38 @@ from apps.api.app.models import ModelArtifact, ModelCandidate, ModelExperiment, 
 from apps.api.app.services.invitation_service import invitation_token
 from apps.api.app.services.user_management_service import UserManagementService
 from services.evolutionary_merge import EvolutionConfig, GeneticOptimizer
+from services.evolutionary_merge.lora_merge import load_metadata, merge_adapters
 
 logger = logging.getLogger(__name__)
 
 
-def demo_fitness(weights: list[float]) -> tuple[float, dict[str, float]]:
-    target = [0.55, 0.3, 0.15][: len(weights)]
-    if len(weights) > len(target):
-        target.extend([0.0] * (len(weights) - len(target)))
-    total = sum(target)
-    target = [value / total for value in target]
-    quality = 1.0 - sum(abs(a - b) for a, b in zip(weights, target, strict=True)) / 2
-    calibration = 1.0 - abs(weights[0] - target[0])
-    latency_penalty = 0.02 * sum(1 for weight in weights if weight > 0.1)
-    fitness = 0.65 * quality + 0.35 * calibration - latency_penalty
-    return fitness, {
-        "suggestion_quality": quality,
-        "calibration": calibration,
-        "latency_penalty": latency_penalty,
-    }
+def project_proposal_fitness(adapter_paths: list[Path]):
+    """Build a reproducible fitness function from versioned offline evaluation sidecars."""
+    evaluations: list[dict[str, float]] = []
+    for path in adapter_paths:
+        evaluation_path = path.with_suffix(".evaluation.json")
+        if not evaluation_path.exists():
+            raise ValueError(f"Missing offline evaluation: {evaluation_path}")
+        payload = json.loads(evaluation_path.read_text(encoding="utf-8"))
+        evaluations.append({key: float(value) for key, value in payload["metrics"].items()})
+    required = {"schema_validity", "relevance", "groundedness", "safety", "latency_score"}
+    if any(not required <= item.keys() for item in evaluations):
+        raise ValueError(f"Evaluation metrics must include {sorted(required)}")
+
+    def evaluate(weights: list[float]) -> tuple[float, dict[str, float]]:
+        metrics = {
+            key: sum(weight * item[key] for weight, item in zip(weights, evaluations, strict=True)) for key in required
+        }
+        fitness = (
+            0.25 * metrics["schema_validity"]
+            + 0.25 * metrics["relevance"]
+            + 0.2 * metrics["groundedness"]
+            + 0.2 * metrics["safety"]
+            + 0.1 * metrics["latency_score"]
+        )
+        return fitness, metrics
+
+    return evaluate
 
 
 async def cancel_requested(experiment_id: str) -> bool:
@@ -54,6 +66,7 @@ async def execute_experiment(experiment_id: str) -> dict:
 
     artifact_dir = Path("artifacts") / "experiments" / experiment_id
     checkpoint = artifact_dir / "checkpoint.json"
+    adapter_paths = [Path(value) for value in config_data["adapter_paths"]]
     optimizer = GeneticOptimizer(
         EvolutionConfig(
             gene_count=len(config_data["adapter_paths"]),
@@ -70,17 +83,33 @@ async def execute_experiment(experiment_id: str) -> dict:
         return cancelled
 
     try:
-        result = optimizer.run(demo_fitness, checkpoint, should_cancel)
+        result = optimizer.run(project_proposal_fitness(adapter_paths), checkpoint, should_cancel)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        best_path = artifact_dir / "best-genome.json"
+        best_path = artifact_dir / "merged-adapter.safetensors"
+        checksum = merge_adapters(adapter_paths, result.best.weights, best_path)
+        metadata = load_metadata(adapter_paths[0])
+        best_path.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "base_model_id": metadata.base_model_id,
+                    "revision": metadata.revision,
+                    "rank": metadata.rank,
+                    "target_modules": list(metadata.target_modules),
+                    "parent_model_ids": config_data["adapter_paths"],
+                    "weights": result.best.weights,
+                    "evaluation_dataset_version": config_data["evaluation_dataset_version"],
+                    "prompt_version": config_data["prompt_version"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         best_payload = {
             "weights": result.best.weights,
             "fitness": result.best.fitness,
             "metrics": result.best.metrics,
             "history": result.history,
         }
-        best_path.write_text(json.dumps(best_payload, indent=2), encoding="utf-8")
-        checksum = hashlib.sha256(best_path.read_bytes()).hexdigest()
         async with SessionLocal() as db:
             experiment = await db.get(ModelExperiment, experiment_id)
             if not experiment:
@@ -91,6 +120,7 @@ async def execute_experiment(experiment_id: str) -> dict:
             candidate = ModelCandidate(
                 organization_id=experiment.organization_id,
                 experiment_id=experiment.id,
+                parent_model_ids=config_data["adapter_paths"],
                 genome={"weights": result.best.weights},
                 generation=result.completed_generations - 1,
                 fitness=result.best.fitness,
@@ -105,7 +135,7 @@ async def execute_experiment(experiment_id: str) -> dict:
                         organization_id=experiment.organization_id,
                         name=f"{experiment.name} best candidate",
                         model_version=f"ga-{experiment.id[:8]}",
-                        base_model_id="demo/base-model",
+                        base_model_id=metadata.base_model_id,
                         parent_model_ids=config_data["adapter_paths"],
                         artifact_path=str(best_path),
                         checksum=checksum,
@@ -176,3 +206,4 @@ async def deliver_outbox_events() -> int:
 @shared_task(name="process_outbox_events")
 def process_outbox_events() -> int:
     return asyncio.run(deliver_outbox_events())
+

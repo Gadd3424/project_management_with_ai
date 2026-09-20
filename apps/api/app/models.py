@@ -119,7 +119,35 @@ class Project(Base, TimestampMixin):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
+    objective: Mapped[str] = mapped_column(Text, default="")
+    success_criteria: Mapped[str] = mapped_column(Text, default="")
+    start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active")
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class ProjectAISuggestion(Base, TimestampMixin):
+    __tablename__ = "project_ai_suggestions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    suggestion_type: Mapped[str] = mapped_column(String(50))
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    proposed_values: Mapped[dict[str, Any]] = mapped_column(JSON)
+    confidence: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    assumptions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    risks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    expected_effect: Mapped[str] = mapped_column(Text, default="")
+    provider: Mapped[str] = mapped_column(String(40), default="mock")
+    model_id: Mapped[str | None] = mapped_column(ForeignKey("models.id"), nullable=True)
+    model_version: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    inference_ms: Mapped[int] = mapped_column(Integer, default=0)
+    decision: Mapped[str] = mapped_column(String(30), default="pending")
+    feedback_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feedback_comment: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 
 
@@ -266,3 +294,4 @@ class IdempotencyRecord(Base):
     resource_type: Mapped[str] = mapped_column(String(80))
     resource_id: Mapped[str] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+

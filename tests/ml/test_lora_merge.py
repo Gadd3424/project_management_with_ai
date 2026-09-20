@@ -53,3 +53,13 @@ def test_artifact_tampering_is_detected(tmp_path: Path) -> None:
     output.write_bytes(output.read_bytes() + b"tampered")
     with pytest.raises(ValueError, match="checksum mismatch"):
         verify_checksum(output, checksum)
+
+
+def test_incompatible_dtype_is_rejected(tmp_path: Path) -> None:
+    first = adapter(tmp_path / "first.safetensors", 1.0)
+    second = tmp_path / "second.safetensors"
+    save_file({"layer.lora_A": np.full((2, 2), 2, dtype=np.int32)}, second)
+    second.with_suffix(".json").write_text(first.with_suffix(".json").read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(ValueError, match="dtypes"):
+        validate_compatibility([first, second])
+
