@@ -36,6 +36,8 @@ class ProjectCreate(BaseModel):
     due_date: datetime | None = None
     status: Literal["active", "archived"] = "active"
     ai_suggestion_id: str | None = None
+    ai_task_suggestion_id: str | None = None
+    initial_tasks: list["InitialTaskCreate"] = Field(default_factory=list, max_length=100)
 
 
 class ProjectUpdate(BaseModel):
@@ -68,6 +70,15 @@ class ProjectDefaultsRequest(BaseModel):
     name: str = Field(min_length=2, max_length=200)
 
 
+class ProjectTaskSuggestionsRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=10000)
+    objective: str = Field(min_length=1, max_length=10000)
+    success_criteria: str = Field(min_length=1, max_length=10000)
+    start_date: datetime | None = None
+    due_date: datetime | None = None
+
+
 class ProjectDeleteRequest(BaseModel):
     version: int = Field(ge=1)
 
@@ -97,20 +108,24 @@ class ProjectAIFeedback(BaseModel):
     comment: str = Field(default="", max_length=5000)
 
 
-class TaskCreate(BaseModel):
+class InitialTaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(default="", max_length=20000)
-    status: Literal["todo", "in_progress", "review", "done"] = "todo"
+    notes: str = Field(default="", max_length=20000)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     assignee_id: str | None = None
     due_at: datetime | None = None
+
+
+class TaskCreate(InitialTaskCreate):
     parent_id: str | None = None
 
 
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=20000)
-    status: Literal["todo", "in_progress", "review", "done"] | None = None
+    notes: str | None = Field(default=None, max_length=20000)
+    status: Literal["todo", "in_progress", "on_hold", "done"] | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
     assignee_id: str | None = None
     due_at: datetime | None = None
@@ -123,6 +138,7 @@ class TaskRead(ORMModel):
     project_id: str
     title: str
     description: str
+    notes: str
     status: str
     priority: str
     assignee_id: str | None
@@ -130,6 +146,26 @@ class TaskRead(ORMModel):
     position: int
     version: int
     created_at: datetime
+
+
+class TaskDeleteRequest(BaseModel):
+    version: int = Field(ge=1)
+
+
+class TaskPositionUpdate(BaseModel):
+    id: str
+    status: Literal["todo", "in_progress", "on_hold", "done"]
+    position: int = Field(ge=0)
+    version: int = Field(ge=1)
+
+
+class TaskReorderRequest(BaseModel):
+    tasks: list[TaskPositionUpdate] = Field(min_length=1, max_length=200)
+
+
+class TaskAssigneeRead(BaseModel):
+    id: str
+    display_name: str
 
 
 class CommentCreate(BaseModel):
@@ -192,4 +228,3 @@ class ExperimentRead(ORMModel):
     cancel_requested: bool
     checkpoint_path: str | None
     created_at: datetime
-
