@@ -37,18 +37,57 @@ AI提案は業務データを直接変更しません。根拠、確信度、参
 
 ## Docker Composeで起動
 
+初回起動と、ソースコード変更後の通常の反映は、リポジトリ直下で開発コマンドを実行します。
+
+Git Bash、Linux、macOS：
+
 ```bash
-cp .env.example .env
-docker compose up --build -d
-docker compose exec api python -m scripts.seed_demo_data
+./dev apply
 ```
 
-Windows PowerShellでは次を使用できます。
+Windows PowerShell：
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up --build -d
-docker compose exec api python -m scripts.seed_demo_data
+.\dev.ps1 apply
+```
+
+このコマンドはDocker Desktopの起動状態とCompose設定を確認し、`.env`がない場合だけ`.env.example`から作成します。既存の`.env`は上書きしません。作成後は`JWT_SECRET`などの開発用設定を確認してください。
+
+通常の`apply`はDockerのビルドキャッシュを利用し、変更されたイメージとコンテナを更新します。キャッシュやコンテナ状態に問題がある場合は、次の完全再構築を使用します。
+
+```bash
+./dev apply --clean
+```
+
+```powershell
+.\dev.ps1 apply --clean
+```
+
+`--clean`は、内部で`docker compose down`、アプリケーションサービスの`--no-cache`ビルド、`--force-recreate`付きの起動を順番に実行します。`down -v`は実行しないため、DBとDockerボリュームは保持されます。一時的に全コンテナが停止する点に注意してください。
+
+デモデータは自動投入されません。必要な場合だけ`--seed`を指定します。`--clean`と同時にも指定できます。
+
+```bash
+./dev apply --seed
+./dev apply --clean --seed
+```
+
+その他の開発コマンド：
+
+```bash
+./dev status       # コンテナ状態
+./dev logs         # 全サービスのログ（Ctrl+Cで終了）
+./dev logs api     # APIのログ
+./dev restart      # データを保持して再起動
+./dev stop         # データを保持して停止
+```
+
+PowerShellでは`./dev`を`.\dev.ps1`に読み替えてください。Docker Engineへ接続できない場合は、Docker Desktopを起動してから再実行します。Windowsで`dockerDesktopLinuxEngine`の名前付きパイプが見つからないエラーが出る場合も同様です。
+
+手動で実行する場合、通常反映と同等のコマンドは次のとおりです。
+
+```bash
+docker compose up -d --build --remove-orphans
 ```
 
 起動後：
@@ -96,10 +135,10 @@ artifacts/demo-adapters/risk.safetensors
 停止する場合：
 
 ```bash
-docker compose down
+./dev stop
 ```
 
-DBや成果物も削除する操作は`docker compose down -v`ですが、永続データを削除するため注意してください。
+DBや成果物も削除する`docker compose down -v`は破壊的操作です。開発コマンドからは実行されないため、全データを削除する明確な意図がある場合に限り、手動で実行してください。
 
 ## ローカル開発
 
