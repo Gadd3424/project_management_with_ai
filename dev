@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+COMPOSE=()
+CURRENT_STEP="初期化"
+
+usage() {
+  cat <<'EOF'
+使い方:
+  ./dev apply [--clean] [--seed]
+  ./dev status
+  ./dev logs [service]
+  ./dev restart
+  ./dev stop
+
+apply --clean はキャッシュを使わず、コンテナを停止して完全再構築します。
+DockerボリュームとDBデータは、どのコマンドでも削除しません。
+EOF
+}
+
+on_error() {
+  local exit_code=$?
+  printf '\n[エラー] %s に失敗しました。\n' "$CURRENT_STEP" >&2
+  printf 'Docker Desktopが起動していることと、上記のエラー内容を確認してください。\n' >&2
+  printf 'ログ確認: ./dev logs または ./dev logs api\n' >&2
+  exit "$exit_code"
+}
+trap on_error ERR
+
+detect_compose() {
+  CURRENT_STEP="Docker CLIの確認"
+  if ! command -v docker >/dev/null 2>&1; then
+    printf '[エラー] dockerコマンドが見つかりません。Docker Desktopをインストールしてください。\n' >&2
+    return 1
+  fi
+
+  CURRENT_STEP="Docker Engineの接続確認"
+  if ! docker info >/dev/null 2>&1; then
+    printf '[エラー] Docker Engineに接続できません。Docker Desktopを起動してから再実行してください。\n' >&2
+    printf 'Windowsで名前付きパイプが見つからない場合も、Docker Desktopの起動状態を確認してください。\n' >&2
+    return 1
+  fi
+
+  CURRENT_STEP="Docker Composeの確認"
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1 && docker-compose version >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+    printf '[注意] Docker Compose V1を使用します。可能であればCompose V2へ更新してください。\n'
+  else
+    printf '[エラー] Docker Composeが見つかりません。Docker Compose V2を有効にしてください。\n' >&2
+    return 1
+  fi
+}
+
+compose() {
+  "${COMPOSE[@]}" "$@"
+}
+
+prepare_environment() {
+  detect_compose
+  CURRENT_STEP="環境変数ファイルの確認"
+  if [[ ! -f .env ]]; then
+    cp .env.example .env
+    printf '[準備] .env.exampleから.envを作成しました。\n'
+    printf '[注意] JWT_SECRETなどの開発用設定を確認してください。既存の.envは今後も上書きしません。\n'
+  fi
+  CURRENT_STEP="Docker Compose設定の検証"
+  compose config --quiet
+}
+
+wait_for_api() {
+  CURRENT_STEP="APIとマイグレーションの起動確認"
+  printf '[確認] APIの起動とマイグレーション完了を待っています...\n'
+  local attempt
+  for attempt in {1..45}; do
+    if compose exec -T api python -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/openapi.json', timeout=2)" \
+      >/dev/null 2>&1; then
+      compose exec -T api alembic current
+      return 0
+    fi
+    sleep 2
+  done
+  printf '[エラー] 90秒以内にAPIの起動を確認できませんでした。\n' >&2
+  compose ps >&2 || true
+  return 1
+}
+
+show_result() {
+  CURRENT_STEP="コンテナ状態の確認"
+  compose ps
+  cat <<'EOF'
+
+開発環境を利用できます:
+  Web:           http://localhost:3000
+  API Docs:      http://localhost:8000/api/v1/docs
+  MLflow:        http://localhost:5000
+  MinIO Console: http://localhost:9001
+EOF
+}
+
+apply_environment() {
+  local clean=false
+  local seed=false
+  shift
+  while (($#)); do
+    case "$1" in
+      --clean) clean=true ;;
+      --seed) seed=true ;;
+      *) printf '[エラー] applyの不明なオプションです: %s\n' "$1" >&2; usage; return 2 ;;
+    esac
+    shift
+  done
+
+  prepare_environment
+  if [[ "$clean" == true ]]; then
+    printf '[実行] コンテナを停止し、アプリケーションをキャッシュなしで完全再構築します。\n'
+    CURRENT_STEP="既存コンテナの停止"
+    compose down
+    CURRENT_STEP="アプリケーションイメージの完全再構築"
+    compose build --no-cache api worker inference web
+    CURRENT_STEP="コンテナの強制再作成"
+    compose up -d --force-recreate
+  else
+    printf '[実行] ビルドキャッシュを利用して変更を反映します。\n'
+    CURRENT_STEP="開発環境への変更反映"
+    compose up -d --build --remove-orphans
+  fi
+
+  wait_for_api
+  if [[ "$seed" == true ]]; then
+    CURRENT_STEP="デモデータの投入"
+    compose exec -T api python -m scripts.seed_demo_data
+  fi
+  show_result
+}
+
+command_name="${1:-help}"
+case "$command_name" in
+  apply)
+    apply_environment "$@"
+    ;;
+  status)
+    (($# == 1)) || { printf '[エラー] statusに引数は指定できません。\n' >&2; exit 2; }
+    prepare_environment
+    CURRENT_STEP="コンテナ状態の確認"
+    compose ps
+    ;;
+  logs)
+    (($# <= 2)) || { printf '[エラー] logsで指定できるサービスは1つだけです。\n' >&2; exit 2; }
+    prepare_environment
+    CURRENT_STEP="コンテナログの表示"
+    trap - ERR
+    if [[ -n "${2:-}" ]]; then
+      compose logs --tail=200 -f "$2"
+    else
+      compose logs --tail=200 -f
+    fi
+    ;;
+  restart)
+    (($# == 1)) || { printf '[エラー] restartに引数は指定できません。\n' >&2; exit 2; }
+    prepare_environment
+    CURRENT_STEP="コンテナの再起動"
+    compose restart
+    wait_for_api
+    show_result
+    ;;
+  stop)
+    (($# == 1)) || { printf '[エラー] stopに引数は指定できません。\n' >&2; exit 2; }
+    prepare_environment
+    CURRENT_STEP="コンテナの停止"
+    compose stop
+    printf '[完了] コンテナを停止しました。DockerボリュームとDBデータは保持されています。\n'
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    printf '[エラー] 不明なサブコマンドです: %s\n' "$command_name" >&2
+    usage
+    exit 2
+    ;;
+esac
