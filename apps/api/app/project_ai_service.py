@@ -63,7 +63,7 @@ async def project_snapshot(db: AsyncSession, project: Project) -> dict[str, Any]
         ).all()
     )
     counts = {
-        status: sum(task.status == status for task in tasks) for status in ("todo", "in_progress", "review", "done")
+        status: sum(task.status == status for task in tasks) for status in ("todo", "in_progress", "on_hold", "done")
     }
     now = datetime.now(UTC)
     overdue = sum(
@@ -139,6 +139,72 @@ def mock_change_proposal(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def mock_task_suggestions(snapshot: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    name = snapshot["name"]
+    objective = snapshot["objective"]
+    success = snapshot["success_criteria"]
+    due_date = snapshot.get("due_date")
+    tasks = [
+        {
+            "title": "要件と成功条件を合意する",
+            "description": f"{name}の目的と成果物の受け入れ基準を関係者と確認します。",
+            "notes": f"目的: {objective}\n成功条件: {success}",
+            "priority": "high",
+            "due_at": None,
+            "rationale": "実行前に目的と完了条件の認識差を解消するためです。",
+            "confidence": 0.88,
+            "assumptions": ["主要な関係者を特定できること。"],
+        },
+        {
+            "title": "実行計画と担当を整理する",
+            "description": "成果物を作業単位に分解し、担当、期限、依存関係を明確にします。",
+            "notes": "計画承認後に各タスクの担当者を設定してください。",
+            "priority": "high",
+            "due_at": None,
+            "rationale": "作業の抜け漏れと担当の曖昧さを減らすためです。",
+            "confidence": 0.84,
+            "assumptions": ["実行メンバーが確定していること。"],
+        },
+        {
+            "title": "主要成果物を作成する",
+            "description": f"{success}を満たす主要成果物を作成し、レビュー可能な状態にします。",
+            "notes": "成果物の具体的な内訳は計画時に追記してください。",
+            "priority": "medium",
+            "due_at": due_date,
+            "rationale": "成功条件に直接つながる実行タスクが必要なためです。",
+            "confidence": 0.8,
+            "assumptions": ["成功条件が成果物として検証可能であること。"],
+        },
+        {
+            "title": "受け入れ確認と振り返りを行う",
+            "description": "成功条件に照らして成果を確認し、残課題と次のアクションを記録します。",
+            "notes": "未達項目は保留理由と再計画を残してください。",
+            "priority": "medium",
+            "due_at": due_date,
+            "rationale": "完了判定を明確にし、学びを次の活動へつなげるためです。",
+            "confidence": 0.82,
+            "assumptions": ["受け入れ判断を行う責任者がいること。"],
+        },
+    ]
+    return {
+        "proposed_values": {"tasks": tasks},
+        "confidence": 0.83,
+        "rationale": "プロジェクトの目的と成功条件から、立ち上げ、実行、受け入れに必要な初期タスクを生成しました。",
+        "evidence": [
+            {"type": "project_objective", "value": objective},
+            {"type": "success_criteria", "value": success},
+        ],
+        "assumptions": ["提案は初期計画であり、担当者と依存関係はユーザーが確認します。"],
+        "risks": ["組織固有の承認工程や外部依存は提案に含まれない場合があります。"],
+        "expected_effect": "目的と成功条件に沿った初期計画を短時間で作成できます。",
+        "provider": "mock",
+        "model_id": None,
+        "model_version": None,
+        "inference_ms": round((time.perf_counter() - started) * 1000),
+    }
+
+
 async def _active_model(db: AsyncSession, organization_id: str) -> ModelArtifact | None:
     return await db.scalar(
         select(ModelArtifact)
@@ -199,3 +265,14 @@ async def suggest_changes(db: AsyncSession, project: Project) -> tuple[dict[str,
     )
     return snapshot, result
 
+
+async def suggest_initial_tasks(
+    db: AsyncSession, organization_id: str, snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    return await _infer(
+        db,
+        organization_id,
+        "/v1/projects/task-suggestions",
+        {"snapshot": snapshot},
+        lambda: mock_task_suggestions(snapshot),
+    )
