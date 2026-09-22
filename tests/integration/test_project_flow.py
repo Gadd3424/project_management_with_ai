@@ -115,6 +115,13 @@ async def test_project_crud_and_ai_proposals(client: AsyncClient, auth_headers: 
         json={"title": "完了済み", "status": "done"},
     )
     assert task.status_code == 201
+    assert task.json()["status"] == "todo"
+    task = await client.patch(
+        f"/api/v1/tasks/{task.json()['id']}",
+        headers=auth_headers,
+        json={"status": "done", "version": task.json()["version"]},
+    )
+    assert task.status_code == 200
     change = await client.post(
         f"/api/v1/projects/{project['id']}/ai/change-proposal",
         headers=auth_headers,
@@ -167,3 +174,97 @@ async def test_viewer_cannot_manage_projects(
     )
     assert ai_denied.status_code == 403
 
+
+async def test_initial_ai_and_manual_tasks_are_created_atomically(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    suggested = await client.post(
+        "/api/v1/projects/ai/task-suggestions",
+        headers=auth_headers,
+        json={
+            "name": "新サービス",
+            "description": "顧客向けサービスを立ち上げる",
+            "objective": "顧客価値を検証する",
+            "success_criteria": "最初の顧客が利用を完了する",
+        },
+    )
+    assert suggested.status_code == 201
+    proposal = suggested.json()
+    assert proposal["suggestion_type"] == "project_initial_tasks"
+    assert len(proposal["proposed_values"]["tasks"]) >= 3
+
+    selected = proposal["proposed_values"]["tasks"][0]
+    created = await client.post(
+        "/api/v1/projects",
+        headers={**auth_headers, "Idempotency-Key": "project-with-tasks"},
+        json={
+            "name": "新サービス",
+            "objective": "顧客価値を検証する",
+            "success_criteria": "最初の顧客が利用を完了する",
+            "ai_task_suggestion_id": proposal["id"],
+            "initial_tasks": [
+                {
+                    "title": selected["title"],
+                    "description": selected["description"],
+                    "notes": selected["notes"],
+                    "priority": selected["priority"],
+                },
+                {"title": "手動で追加", "notes": "利用者が追記", "priority": "urgent"},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    project = created.json()
+    replay = await client.post(
+        "/api/v1/projects",
+        headers={**auth_headers, "Idempotency-Key": "project-with-tasks"},
+        json={
+            "name": "新サービス",
+            "objective": "顧客価値を検証する",
+            "success_criteria": "最初の顧客が利用を完了する",
+            "ai_task_suggestion_id": proposal["id"],
+            "initial_tasks": [
+                {
+                    "title": selected["title"], "description": selected["description"],
+                    "notes": selected["notes"], "priority": selected["priority"],
+                },
+                {"title": "手動で追加", "notes": "利用者が追記", "priority": "urgent"},
+            ],
+        },
+    )
+    assert replay.status_code == 201
+    tasks = (await client.get(f"/api/v1/projects/{project['id']}/tasks", headers=auth_headers)).json()
+    assert len(tasks) == 2
+    assert {task["title"] for task in tasks} == {selected["title"], "手動で追加"}
+    assert all(task["status"] == "todo" for task in tasks)
+
+
+async def test_task_reorder_and_soft_delete(client: AsyncClient, auth_headers: dict[str, str]) -> None:
+    project = (await client.post("/api/v1/projects", headers=auth_headers, json={"name": "Kanban"})).json()
+    first = (await client.post(
+        f"/api/v1/projects/{project['id']}/tasks", headers=auth_headers,
+        json={"title": "First", "description": "概要", "notes": "補足"},
+    )).json()
+    second = (await client.post(
+        f"/api/v1/projects/{project['id']}/tasks", headers=auth_headers, json={"title": "Second"},
+    )).json()
+    moved = await client.patch(
+        f"/api/v1/projects/{project['id']}/tasks/reorder",
+        headers=auth_headers,
+        json={"tasks": [
+            {"id": first["id"], "status": "in_progress", "position": 0, "version": first["version"]},
+            {"id": second["id"], "status": "on_hold", "position": 0, "version": second["version"]},
+        ]},
+    )
+    assert moved.status_code == 200
+    by_id = {task["id"]: task for task in moved.json()}
+    assert by_id[first["id"]]["status"] == "in_progress"
+    assert by_id[second["id"]]["status"] == "on_hold"
+    assert by_id[first["id"]]["notes"] == "補足"
+
+    removed = await client.request(
+        "DELETE", f"/api/v1/tasks/{first['id']}", headers=auth_headers,
+        json={"version": by_id[first["id"]]["version"]},
+    )
+    assert removed.status_code == 204
+    assert (await client.get(f"/api/v1/tasks/{first['id']}", headers=auth_headers)).status_code == 404
