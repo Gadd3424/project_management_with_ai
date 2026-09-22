@@ -151,6 +151,30 @@ class ProjectAISuggestion(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 
 
+class ProjectMember(Base, TimestampMixin):
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(30), default="viewer")
+    invitation_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    invited_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    invited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProjectMessage(Base, TimestampMixin):
+    __tablename__ = "project_messages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    author_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    body: Mapped[str] = mapped_column(Text)
+
+
 class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
