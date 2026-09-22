@@ -1,14 +1,39 @@
-from fastapi import APIRouter, HTTPException, Request, status
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import select, update
 
 from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
 from ..domain.permissions import OrganizationPermission
-from ..models import Comment, Project, Task
-from ..schemas import CommentCreate, CommentRead, TaskRead, TaskUpdate
+from ..models import Comment, OrganizationMember, Project, Task, User
+from ..schemas import CommentCreate, CommentRead, TaskAssigneeRead, TaskDeleteRequest, TaskRead, TaskUpdate
 from ..services.authorization_service import AuthorizationService
 
 router = APIRouter(tags=["tasks"])
+
+
+@router.get("/task-assignees", response_model=list[TaskAssigneeRead])
+async def list_task_assignees(db: DbSession, user: CurrentUser, tenant: Tenant) -> list[TaskAssigneeRead]:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
+    rows = (
+        await db.execute(
+            select(User.id, User.display_name)
+            .join(OrganizationMember, OrganizationMember.user_id == User.id)
+            .where(
+                OrganizationMember.organization_id == tenant.organization_id,
+                OrganizationMember.status == "active",
+                OrganizationMember.deleted_at.is_(None),
+                User.deleted_at.is_(None),
+                User.status == "active",
+                User.is_active.is_(True),
+            )
+            .order_by(User.display_name)
+        )
+    ).all()
+    return [TaskAssigneeRead(id=row.id, display_name=row.display_name) for row in rows]
 
 
 async def tenant_task(task_id: str, db: DbSession, tenant: Tenant) -> Task:
@@ -46,7 +71,21 @@ async def update_task(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
+    await tenant_task(task_id, db, tenant)
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    if payload.assignee_id:
+        member = await db.scalar(
+            select(OrganizationMember).join(User, User.id == OrganizationMember.user_id).where(
+                OrganizationMember.organization_id == tenant.organization_id,
+                OrganizationMember.user_id == payload.assignee_id,
+                OrganizationMember.status == "active",
+                OrganizationMember.deleted_at.is_(None),
+                User.status == "active",
+                User.is_active.is_(True),
+            )
+        )
+        if not member:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid task assignee")
     result = await db.execute(
         update(Task)
         .where(
@@ -62,6 +101,29 @@ async def update_task(
     add_audit(db, request, tenant.organization_id, user, "task.update", "task", task_id, changes)
     await db.commit()
     return await tenant_task(task_id, db, tenant)
+
+
+@router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(
+    task_id: str,
+    payload: TaskDeleteRequest,
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: Tenant,
+    _: Csrf,
+) -> Response:
+    await AuthorizationService(db).require_permission(
+        user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
+    )
+    task = await tenant_task(task_id, db, tenant)
+    if task.version != payload.version:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Task changed or no longer exists")
+    task.deleted_at = datetime.now(UTC)
+    task.version += 1
+    add_audit(db, request, tenant.organization_id, user, "task.delete", "task", task_id)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/tasks/{task_id}/comments", response_model=list[CommentRead])
@@ -108,4 +170,3 @@ async def create_comment(
     await db.commit()
     await db.refresh(comment)
     return comment
-
