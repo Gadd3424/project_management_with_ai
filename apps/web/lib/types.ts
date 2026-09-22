@@ -12,10 +12,17 @@ export type ProjectAISuggestion = {
   model_version: string | null; inference_ms: number; decision: string; created_at: string;
 };
 export type Task = {
-  id: string; project_id: string; title: string; description: string;
-  status: "todo" | "in_progress" | "review" | "done";
+  id: string; project_id: string; title: string; description: string; notes: string;
+  status: TaskStatus;
   priority: string; assignee_id: string | null; due_at: string | null;
   position: number; version: number; created_at: string;
+};
+export type TaskStatus = "todo" | "in_progress" | "on_hold" | "done";
+export type TaskDraft = {
+  client_id: string; title: string; description: string; notes: string;
+  priority: "low" | "medium" | "high" | "urgent"; due_at: string;
+  source: "manual" | "ai"; selected: boolean; rationale?: string;
+  confidence?: number; assumptions?: string[];
 };
 export type Suggestion = {
   id: string; task_id: string; suggestion_type: string; content: Record<string, unknown>;
@@ -24,5 +31,4 @@ export type Suggestion = {
   decision: string; revised_content: Record<string, unknown> | null; inference_ms: number;
   created_at: string;
 };
-
 

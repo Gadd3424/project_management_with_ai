@@ -159,6 +159,7 @@ class Task(Base, TimestampMixin):
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(300))
     description: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="todo")
     priority: Mapped[str] = mapped_column(String(20), default="medium")
     assignee_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -294,4 +295,3 @@ class IdempotencyRecord(Base):
     resource_type: Mapped[str] = mapped_column(String(80))
     resource_id: Mapped[str] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
