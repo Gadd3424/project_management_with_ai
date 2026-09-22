@@ -66,6 +66,72 @@ class ProjectRead(ORMModel):
     created_at: datetime
 
 
+class ProjectSummary(ProjectRead):
+    my_role: str
+    task_count: int
+    status_counts: dict[str, int]
+    completion_rate: float
+    unread_count: int
+
+
+class ProjectMemberRead(BaseModel):
+    id: str
+    user_id: str
+    display_name: str
+    email: str
+    organization_role: str
+    role: str
+    invitation_status: str
+    invited_at: datetime
+    joined_at: datetime | None
+    version: int
+    project_name: str | None = None
+
+
+class ProjectInviteCandidate(BaseModel):
+    user_id: str
+    display_name: str
+    email: str
+    organization_role: str
+    membership_status: str | None = None
+
+
+class ProjectInvitationItem(BaseModel):
+    user_id: str
+    role: Literal["editor", "viewer"]
+
+
+class ProjectInvitationCreate(BaseModel):
+    invitations: list[ProjectInvitationItem] = Field(min_length=1, max_length=50)
+
+
+class ProjectInvitationDecision(BaseModel):
+    version: int = Field(ge=1)
+
+
+class ProjectMemberUpdate(BaseModel):
+    role: Literal["editor", "viewer"]
+    version: int = Field(ge=1)
+
+
+class ProjectMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class ProjectMessageRead(BaseModel):
+    id: str
+    project_id: str
+    author_id: str
+    author_name: str
+    body: str
+    created_at: datetime
+
+
+class ProjectMessagePage(BaseModel):
+    items: list[ProjectMessageRead]
+    next_before: datetime | None = None
+
+
 class ProjectDefaultsRequest(BaseModel):
     name: str = Field(min_length=2, max_length=200)
 

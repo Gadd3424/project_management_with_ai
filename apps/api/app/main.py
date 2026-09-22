@@ -11,7 +11,17 @@ from .config import get_settings
 from .db import SessionLocal, engine
 from .errors import DomainError
 from .models import User
-from .routers import audit_logs, auth, experiments, organization_users, organizations, projects, suggestions, tasks
+from .routers import (
+    audit_logs,
+    auth,
+    collaboration,
+    experiments,
+    organization_users,
+    organizations,
+    projects,
+    suggestions,
+    tasks,
+)
 from .security import decode_token_claims
 from .services.audit_service import add_management_audit
 
@@ -111,6 +121,7 @@ for router in (
     auth.router,
     organizations.router,
     projects.router,
+    collaboration.router,
     tasks.router,
     suggestions.router,
     experiments.router,

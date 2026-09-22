@@ -67,6 +67,7 @@ class TenantContext:
     organization_id: str
     role: str
     member_id: str
+    user_id: str
 
 
 async def tenant_context(
@@ -85,7 +86,7 @@ async def tenant_context(
     if not member:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Organization access denied")
     role = member.role.value if hasattr(member.role, "value") else str(member.role)
-    return TenantContext(organization_id, role, member.id)
+    return TenantContext(organization_id, role, member.id, user.id)
 
 
 Tenant = Annotated[TenantContext, Depends(tenant_context)]
@@ -102,3 +103,4 @@ def require_role(minimum: str):
         return tenant
 
     return check
+

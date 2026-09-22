@@ -4,6 +4,24 @@ export type Project = {
   objective: string; success_criteria: string; start_date: string | null; due_date: string | null;
   status: string; version: number; created_at: string;
 };
+export type ProjectSummary = Project & {
+  my_role: "project_admin" | "editor" | "viewer"; task_count: number;
+  status_counts: Record<string, number>; completion_rate: number; unread_count: number;
+};
+export type ProjectMember = {
+  id: string; user_id: string; display_name: string; email: string;
+  organization_role: string; role: "project_admin" | "editor" | "viewer";
+  invitation_status: "pending" | "accepted" | "declined" | "revoked";
+  invited_at: string; joined_at: string | null; version: number;
+  project_name?: string | null;
+};
+export type InviteCandidate = {
+  user_id: string; display_name: string; email: string; organization_role: string;
+  membership_status: string | null;
+};
+export type ProjectMessage = {
+  id: string; project_id: string; author_id: string; author_name: string; body: string; created_at: string;
+};
 export type ProjectAISuggestion = {
   id: string; project_id: string | null; suggestion_type: string;
   proposed_values: Partial<Project>; confidence: number; rationale: string;

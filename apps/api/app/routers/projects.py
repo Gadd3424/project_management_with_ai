@@ -8,7 +8,8 @@ from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
 from ..domain.permissions import OrganizationPermission
 from ..idempotency import find_replayed_resource, store_idempotency
-from ..models import OrganizationMember, Project, ProjectAISuggestion, Task, User
+from ..models import OrganizationMember, Project, ProjectAISuggestion, ProjectMember, Task, User
+from ..project_access import MANAGER_ROLES, accessible_project
 from ..project_ai_service import suggest_changes, suggest_defaults, suggest_initial_tasks
 from ..rate_limit import limit_suggestion_generation
 from ..schemas import (
@@ -31,16 +32,19 @@ router = APIRouter(tags=["projects"])
 
 @router.get("/projects", response_model=list[ProjectRead])
 async def list_projects(db: DbSession, tenant: Tenant) -> list[Project]:
+    query = select(Project).where(
+        Project.organization_id == tenant.organization_id,
+        Project.deleted_at.is_(None),
+    )
+    if tenant.role not in MANAGER_ROLES:
+        query = query.join(ProjectMember, ProjectMember.project_id == Project.id).where(
+            ProjectMember.user_id == tenant.user_id,
+            ProjectMember.invitation_status == "accepted",
+            ProjectMember.deleted_at.is_(None),
+        )
     return list(
         (
-            await db.scalars(
-                select(Project)
-                .where(
-                    Project.organization_id == tenant.organization_id,
-                    Project.deleted_at.is_(None),
-                )
-                .order_by(Project.created_at.desc())
-            )
+            await db.scalars(query.order_by(Project.created_at.desc()))
         ).all()
     )
 
@@ -76,6 +80,17 @@ async def create_project(
     )
     db.add(project)
     await db.flush()
+    db.add(
+        ProjectMember(
+            organization_id=tenant.organization_id,
+            project_id=project.id,
+            user_id=user.id,
+            role="project_admin",
+            invitation_status="accepted",
+            invited_by=user.id,
+            joined_at=datetime.now(UTC),
+        )
+    )
     store_idempotency(
         db,
         tenant.organization_id,
@@ -146,15 +161,7 @@ async def create_project(
 
 @router.get("/projects/{project_id}", response_model=ProjectRead)
 async def get_project(project_id: str, db: DbSession, tenant: Tenant) -> Project:
-    project = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.organization_id == tenant.organization_id,
-            Project.deleted_at.is_(None),
-        )
-    )
-    if not project:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    project, _ = await accessible_project(db, project_id, tenant)
     return project
 
 
@@ -171,6 +178,7 @@ async def update_project(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
+    await accessible_project(db, project_id, tenant, edit=True)
     changes = payload.model_dump(exclude_unset=True, exclude={"version", "ai_suggestion_id"})
     result = await db.execute(
         update(Project)
@@ -212,6 +220,7 @@ async def delete_project(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_DELETE
     )
+    await accessible_project(db, project_id, tenant, manage=True)
     result = await db.execute(
         update(Project)
         .where(
@@ -307,7 +316,7 @@ async def create_project_change_proposal(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_AI_SUGGEST
     )
-    project = await get_project(project_id, db, tenant)
+    project, _ = await accessible_project(db, project_id, tenant, edit=True)
     snapshot, result = await suggest_changes(db, project)
     suggestion = _build_project_suggestion(
         tenant=tenant,
@@ -439,7 +448,7 @@ async def create_task(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
-    project = await get_project(project_id, db, tenant)
+    project, _ = await accessible_project(db, project_id, tenant, edit=True)
     if payload.assignee_id:
         member = await db.scalar(
             select(OrganizationMember).join(User, User.id == OrganizationMember.user_id).where(
@@ -518,7 +527,7 @@ async def reorder_tasks(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
-    await get_project(project_id, db, tenant)
+    await accessible_project(db, project_id, tenant, edit=True)
     if len({item.id for item in payload.tasks}) != len(payload.tasks):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Duplicate task id")
     for item in payload.tasks:

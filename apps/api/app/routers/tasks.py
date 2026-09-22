@@ -7,6 +7,7 @@ from ..audit import add_audit
 from ..dependencies import Csrf, CurrentUser, DbSession, Tenant
 from ..domain.permissions import OrganizationPermission
 from ..models import Comment, OrganizationMember, Project, Task, User
+from ..project_access import accessible_project
 from ..schemas import CommentCreate, CommentRead, TaskAssigneeRead, TaskDeleteRequest, TaskRead, TaskUpdate
 from ..services.authorization_service import AuthorizationService
 
@@ -50,6 +51,7 @@ async def tenant_task(task_id: str, db: DbSession, tenant: Tenant) -> Task:
     )
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
+    await accessible_project(db, task.project_id, tenant)
     return task
 
 
@@ -71,7 +73,8 @@ async def update_task(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
-    await tenant_task(task_id, db, tenant)
+    task = await tenant_task(task_id, db, tenant)
+    await accessible_project(db, task.project_id, tenant, edit=True)
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
     if payload.assignee_id:
         member = await db.scalar(
@@ -117,6 +120,7 @@ async def delete_task(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
     task = await tenant_task(task_id, db, tenant)
+    await accessible_project(db, task.project_id, tenant, edit=True)
     if task.version != payload.version:
         raise HTTPException(status.HTTP_409_CONFLICT, "Task changed or no longer exists")
     task.deleted_at = datetime.now(UTC)
@@ -157,7 +161,8 @@ async def create_comment(
     await AuthorizationService(db).require_permission(
         user, tenant.organization_id, OrganizationPermission.PROJECTS_UPDATE
     )
-    await tenant_task(task_id, db, tenant)
+    task = await tenant_task(task_id, db, tenant)
+    await accessible_project(db, task.project_id, tenant, edit=True)
     comment = Comment(
         organization_id=tenant.organization_id,
         task_id=task_id,
