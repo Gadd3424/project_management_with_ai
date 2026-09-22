@@ -47,6 +47,11 @@ class ProjectChangeRequest(BaseModel):
     model: EvolutionModel
 
 
+class ProjectTaskSuggestionsRequest(BaseModel):
+    snapshot: dict[str, Any]
+    model: EvolutionModel
+
+
 class ProjectProposalResponse(BaseModel):
     proposed_values: dict[str, Any]
     confidence: float = Field(ge=0, le=1)
@@ -156,3 +161,27 @@ def project_change(payload: ProjectChangeRequest) -> ProjectProposalResponse:
         inference_ms=round((time.perf_counter() - started) * 1000),
     )
 
+
+@app.post("/v1/projects/task-suggestions", response_model=ProjectProposalResponse)
+def project_task_suggestions(payload: ProjectTaskSuggestionsRequest) -> ProjectProposalResponse:
+    from apps.api.app.project_ai_service import mock_task_suggestions
+
+    started = time.perf_counter()
+    signal = model_signal(payload.model)
+    result = mock_task_suggestions(payload.snapshot)
+    tasks = result["proposed_values"]["tasks"]
+    for task in tasks:
+        task["confidence"] = min(0.98, task["confidence"] + signal * 0.12)
+    result["confidence"] = min(0.97, result["confidence"] + signal * 0.15)
+    result["evidence"].append({"type": "evolutionary_model_signal", "value": round(signal, 4)})
+    return ProjectProposalResponse(
+        **{
+            key: value
+            for key, value in result.items()
+            if key not in {"provider", "model_id", "model_version", "inference_ms"}
+        },
+        provider="evolutionary_merge",
+        model_id=payload.model.id,
+        model_version=payload.model.version,
+        inference_ms=round((time.perf_counter() - started) * 1000),
+    )
